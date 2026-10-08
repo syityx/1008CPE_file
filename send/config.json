@@ -1,0 +1,14 @@
+{
+  "token": "1008CPE-file-lab-public-token-20261008",
+  "experiment_id": "1008CPE_file",
+  "lan_bind_ip": "auto",
+  "lan_port": 30012,
+  "cloud_bind_ip": "auto",
+  "cloud_host": "47.97.248.31",
+  "cloud_data_port": 30016,
+  "peer_timeout": 15,
+  "cloud_control_port": 30017,
+  "announce_interval": 3,
+  "file_burst_packets": 8,
+  "file_burst_interval": 0.001
+}

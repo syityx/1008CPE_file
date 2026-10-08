@@ -1,0 +1,8 @@
+{
+  "token": "1008CPE-file-lab-public-token-20261008",
+  "experiment_id": "1008CPE_file",
+  "bind_ip": "0.0.0.0",
+  "data_port": 30016,
+  "control_port": 30017,
+  "peer_timeout": 15
+}

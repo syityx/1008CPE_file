@@ -1,0 +1,24 @@
+# 固定实验配置按用户要求公开；个人记录仍保留在本机。
+/readme.txt
+
+# Python 缓存、日志和编辑器本地文件。
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.venv/
+.idea/
+.vscode/
+
+# 测试文件启动时生成；个人源文件与下载/实验记录不提交。
+/send/files/
+/receive/results/
+
+# SSH 私钥或其他凭据不进入公开仓库。
+*.pem
+*.key
+.env
+.env.*
+
+# 本机恢复校验记录，不属于项目。
+*.local.json
