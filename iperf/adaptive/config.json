@@ -15,10 +15,11 @@
     "control_port": 5326
   },
   "cpe": {
-    "sender_ip": "",
-    "bind_ip": "auto",
+    "sender_ip": "168.168.168.100",
+    "bind_ip": "192.168.2.180",
     "port": 5227,
-    "control_port": 5327
+    "control_port": 5327,
+    "gateway": "192.168.2.230"
   },
   "profile": "standard",
   "count_limit": 0,

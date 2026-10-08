@@ -9,10 +9,11 @@
   "file_batch_seconds": 60,
   "warmup_epochs": 2,
   "cpe": {
-    "sender_ip": "",
-    "bind_ip": "auto",
+    "sender_ip": "168.168.168.100",
+    "bind_ip": "192.168.2.180",
     "port": 5237,
-    "control_port": 5337
+    "control_port": 5337,
+    "gateway": "192.168.2.230"
   },
   "rounds": 0,
   "files_per_batch": 1,
