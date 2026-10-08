@@ -1,0 +1,21 @@
+{
+  "mode": "fixed",
+  "total_bps": 2000000,
+  "duration_seconds": 60,
+  "epoch_seconds": 5,
+  "datagram_bytes": 1200,
+  "warmup_epochs": 2,
+  "connect_timeout_ms": 5000,
+  "process_grace_seconds": 20,
+  "auto_routes": true,
+  "lan": {
+    "sender_ip": "",
+    "bind_ip": "auto",
+    "port": 5216
+  },
+  "cpe": {
+    "sender_ip": "",
+    "bind_ip": "auto",
+    "port": 5217
+  }
+}
