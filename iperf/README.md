@@ -39,14 +39,12 @@ iperf/
 
 1. 发送端双击相应目录的 `send/start.cmd`。
 2. 接收端双击该目录的 `receive/start.cmd`。
-3. 当前专网地址已预填：发送端A有线`168.168.168.100`，接收端B有线`192.168.2.180`，CPE网关`192.168.2.230`。Wi-Fi沿用本机已保存的配置；首次缺少LAN配置时填写对应地址并选择网卡。保存到该模式的 `config.local.json` 后，后续直接双击即可。更换地址时用命令行覆盖或调整本机配置。
+3. 首次填写发送端在所选方向可达的IPv4，并选择对应本机网卡。保存到该模式的 `config.local.json` 后，后续直接双击即可。更换地址时删除该文件重选或用命令行覆盖。
 4. 默认总目标速率2Mbps，按小→中→大循环，各访问一次传一份，约60秒后在完整文件批次边界停止。发送端继续等待，Ctrl+C退出。
 
 双路需要两张接收网卡，以及发送端两个不同的可达目标IPv4；单路只需要所选的一张网卡和一个目标地址。目标IP应是发送端地址，或明确转发到发送端所列TCP端口的入口；不要填接收端或CPE自身的地址。专网须有相应业务/回程路由，能ping通CPE不足以确认TCP能到发送端。
 
-两端不是靠云服务器发现地址。本机IPv4用`ipconfig`查看。当前`adaptive/fixed/cpe_only`均已预填用户确认的专网地址；`config.local.json`中的已保存值优先于默认配置，若仍保存旧专网地址，可只删除其中的`cpe`节点后重启，不影响LAN配置。
-
-当前实验拓扑：A的网线接核心网，B的网线接CPE；CPE蜂窝地址由核心网分配为`182.182.x.x`，LAN地址为`192.168.2.230`，NAT可以保持开启。B先经CPE主动连接A的`168.168.168.100`，A沿已建立的TCP连接把文件返回B。程序不要求手动填写CPE的蜂窝地址，也不要求A直接路由到B的`192.168.2.180`。B经CPE到A的文件控制和iperf TCP端口仍需连通。
+两端不是靠云服务器发现地址。本机IPv4用`ipconfig`查看，未知的专网目标不预填虚构值。
 
 ### 离线局域网使用
 
@@ -120,9 +118,7 @@ python iperf/lan_only/receive/main.py --lan-host A1 --lan-ip B1
 
 # 仅CPE，不填写LAN地址
 python iperf/cpe_only/send/main.py
-python iperf/cpe_only/receive/main.py
-# 覆盖旧本机配置时可明确指定已确认地址
-python iperf/cpe_only/receive/main.py --cpe-host 168.168.168.100 --cpe-ip 192.168.2.180
+python iperf/cpe_only/receive/main.py --cpe-host A2 --cpe-ip B2
 
 # 双路反馈，10Mbps，循环120秒
 python iperf/adaptive/receive/main.py --rate 10000000 --duration 120
