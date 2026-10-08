@@ -1,8 +1,9 @@
 ﻿param(
-    [Parameter(Mandatory=$true)][ValidateSet('adaptive','fixed')][string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('adaptive','fixed','lan_only','cpe_only')][string]$Mode,
     [Parameter(Mandatory=$true)][ValidateSet('send','receive')][string]$Role,
     [string]$PythonPath,
     [string]$IperfPath,
+    [ValidateSet('standard_files','synthetic')][string]$Payload = 'standard_files',
     [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -17,16 +18,21 @@ try {
         $PythonPath = ([string]($pythonOutput | Select-Object -Last 1)).Trim()
     }
     if (-not $IperfPath) {
-        & $PythonPath -m iperf.common.runtime
-        if ($LASTEXITCODE -ne 0) { throw 'iperf3安装或校验失败，请检查下载网络。' }
         $IperfPath = Join-Path $PSScriptRoot 'tools\runtime\iperf3.exe'
+        if ($Mode -eq 'lan_only' -and -not (Test-Path -LiteralPath $IperfPath)) {
+            throw '局域网离线模式不会下载工具。请预先复制iperf3.exe和cygwin1.dll到iperf/tools/runtime。'
+        }
+        if ($Mode -ne 'lan_only') {
+            & $PythonPath -m iperf.common.runtime
+            if ($LASTEXITCODE -ne 0) { throw 'iperf3安装或校验失败，请检查下载网络。' }
+        }
     }
     if ($CheckOnly) { Write-Output "Python=$PythonPath; iperf=$IperfPath"; exit 0 }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         # 此窗口需要交互选择网卡/IP；在管理员窗口中启动同一个入口。
-        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode {1} -Role {2} -PythonPath "{3}" -IperfPath "{4}"' -f $PSCommandPath,$Mode,$Role,$PythonPath,$IperfPath
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode {1} -Role {2} -PythonPath "{3}" -IperfPath "{4}" -Payload {5}' -f $PSCommandPath,$Mode,$Role,$PythonPath,$IperfPath,$Payload
         Start-Process powershell.exe -Verb RunAs -ArgumentList $arguments -Wait
         exit 0
     }
@@ -36,13 +42,29 @@ try {
         if (Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue) {
             Remove-NetFirewallRule -Name $rule
         }
-        $ports = if ($Role -eq 'send') { @($config.lan.port, $config.cpe.port) } else { 'Any' }
+        $names = if ($Mode -eq 'lan_only') { @('lan') } elseif ($Mode -eq 'cpe_only') { @('cpe') } else { @('lan','cpe') }
+        $ports = if ($Role -eq 'send') {
+            @(foreach ($name in $names) {
+                $config.$name.port
+            })
+        } else { 'Any' }
+        if ($Payload -eq 'standard_files' -and $protocol -eq 'UDP') { continue }
         # iperf反向模式也需要TCP控制。接收UDP端口由iperf分配，因此按程序限定。
         New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Inbound -Action Allow `
             -Protocol $protocol -LocalPort $ports -Program $IperfPath -Profile Any | Out-Null
     }
+    $controlRule = "1008CPE-file-iperf-$Mode-$Role-filecontrol-TCP"
+    if (Get-NetFirewallRule -Name $controlRule -ErrorAction SilentlyContinue) {
+        Remove-NetFirewallRule -Name $controlRule
+    }
+    if ($Role -eq 'send' -and $Payload -eq 'standard_files') {
+        # 文件准备控制由Python监听，不能错误地仅给iperf.exe放行这些端口。
+        $controlPorts = @(foreach ($name in $names) { $config.$name.control_port })
+        New-NetFirewallRule -Name $controlRule -DisplayName $controlRule -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort $controlPorts -Program $PythonPath -Profile Any | Out-Null
+    }
     Write-Host "模式=$Mode；角色=$Role；Python=$PythonPath"
-    & $PythonPath (Join-Path $PSScriptRoot "$Mode\$Role\main.py") --iperf $IperfPath
+    & $PythonPath (Join-Path $PSScriptRoot "$Mode\$Role\main.py") --iperf $IperfPath --payload $Payload
     if ($LASTEXITCODE -ne 0) { throw "实验未完成，退出码=$LASTEXITCODE，请查看窗口提示和结果。" }
 } catch {
     Write-Host "启动失败：$($_.Exception.Message)" -ForegroundColor Red

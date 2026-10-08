@@ -10,10 +10,16 @@ class LossFeedback:
         self.warmup_epochs = warmup_epochs
 
     def update(self, lan, cpe):
-        self.samples += 1
         # 两路丢包率按比例归一化，避免低速路因为字节少而永远被判为差路。
         quality0 = 1 - lan["lost_percent"] / 100
         quality1 = 1 - cpe["lost_percent"] / 100
+        return self.update_quality(quality0, quality1)
+
+    def update_quality(self, quality0, quality1):
+        """TCP文件模式传入接收速率/目标速率；不能把TCP重传隐瞒为UDP零丢包。"""
+        if not 0 <= quality0 <= 1 or not 0 <= quality1 <= 1:
+            raise ValueError("交付质量须为0..1。")
+        self.samples += 1
         difference = quality0 - quality1
         delta = 0.0
         raw = 0

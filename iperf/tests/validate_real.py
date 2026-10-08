@@ -140,7 +140,7 @@ def main():
             path.write_text(json.dumps(config), encoding="utf-8")
             output = folder / mode
             result = subprocess.run([sys.executable, str(ROOT / mode / "receive" / "main.py"),
-                                     "--config", str(path), "--iperf", exe, "--loopback-test", "--output", str(output)],
+                                     "--payload", "synthetic", "--config", str(path), "--iperf", exe, "--loopback-test", "--output", str(output)],
                                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             (folder / (mode + "_console.txt")).write_text(result.stdout + result.stderr, encoding="utf-8")
             print(result.stdout, flush=True)
@@ -166,7 +166,7 @@ def main():
         path.write_text(json.dumps(config), encoding="utf-8")
         output = folder / "failure"
         result = subprocess.run([sys.executable, str(ROOT / "fixed" / "receive" / "main.py"), "--config", str(path),
-                                 "--iperf", exe, "--loopback-test", "--output", str(output)],
+                                 "--payload", "synthetic", "--iperf", exe, "--loopback-test", "--output", str(output)],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         (folder / "failure_console.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
         summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))

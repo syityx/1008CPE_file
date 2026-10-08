@@ -35,12 +35,14 @@ def install_windows():
     return folder / "iperf3.exe"
 
 
-def resolve_iperf(explicit=None):
+def resolve_iperf(explicit=None, allow_download=True):
     bundled = ROOT / "tools" / "runtime" / "iperf3.exe"
     if explicit:
         path = Path(explicit).expanduser().resolve()
     elif os.name == "nt":
         # 同一 Windows 实验优先使用固定版本，避免 PATH 中旧版的 JSON 差异。
+        if not bundled.is_file() and not allow_download:
+            raise ValueError("局域网离线模式不会访问公网下载。请事先将iperf3.exe和cygwin1.dll放入iperf/tools/runtime，或指定--iperf。")
         path = bundled if bundled.is_file() else install_windows()
     else:
         found = shutil.which("iperf3")

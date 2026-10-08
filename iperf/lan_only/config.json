@@ -1,0 +1,21 @@
+{
+  "mode": "lan_only",
+  "epoch_seconds": 5,
+  "connect_timeout_ms": 5000,
+  "process_grace_seconds": 30,
+  "auto_routes": true,
+  "profile": "standard",
+  "count_limit": 0,
+  "file_batch_seconds": 60,
+  "warmup_epochs": 2,
+  "lan": {
+    "sender_ip": "",
+    "bind_ip": "auto",
+    "port": 5236,
+    "control_port": 5336
+  },
+  "rounds": 0,
+  "files_per_batch": 1,
+  "duration_seconds": 60,
+  "total_bps": 2000000
+}

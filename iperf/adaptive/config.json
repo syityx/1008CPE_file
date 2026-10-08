@@ -11,11 +11,18 @@
   "lan": {
     "sender_ip": "",
     "bind_ip": "auto",
-    "port": 5226
+    "port": 5226,
+    "control_port": 5326
   },
   "cpe": {
     "sender_ip": "",
     "bind_ip": "auto",
-    "port": 5227
-  }
+    "port": 5227,
+    "control_port": 5327
+  },
+  "profile": "standard",
+  "count_limit": 0,
+  "file_batch_seconds": 60,
+  "rounds": 0,
+  "files_per_batch": 1
 }

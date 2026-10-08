@@ -1,0 +1,21 @@
+{
+  "mode": "cpe_only",
+  "epoch_seconds": 5,
+  "connect_timeout_ms": 5000,
+  "process_grace_seconds": 30,
+  "auto_routes": true,
+  "profile": "standard",
+  "count_limit": 0,
+  "file_batch_seconds": 60,
+  "warmup_epochs": 2,
+  "cpe": {
+    "sender_ip": "",
+    "bind_ip": "auto",
+    "port": 5237,
+    "control_port": 5337
+  },
+  "rounds": 0,
+  "files_per_batch": 1,
+  "duration_seconds": 60,
+  "total_bps": 2000000
+}

@@ -26,5 +26,6 @@ __pycache__/
 
 # iperf下载工具/本机地址/实测结果不进入仓库，源码与固定参数保留。
 /iperf/tools/runtime/
+/iperf/tools/source/
 /iperf/tools/*.zip
 /iperf/*/results/

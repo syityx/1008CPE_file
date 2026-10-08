@@ -1,8 +1,10 @@
-# 1008CPE_file：表7标准双链路文件传输测试
+# 1008CPE_file：标准文件多链路传输实验
 
-接收端从发送端通过Wi-Fi和CPE两路下载，使用原1008CPE模糊PID分配文件块，合并后校验SHA256。默认按“表7 单业务流发包模型”定时发送，完成规定次数后自动结束。原1008CPE视频工程使用独立目录、仓库和端口。
+当前iperf入口使用实际的200B、8kB、1.5MB三个标准文件，通过真正iperf3 TCP发送、合并并校验SHA256。按本次实验要求，表7只约束文件大小，不强制间隔或次数；默认循环60秒，总目标速率2Mbps。
 
-新增专网直连 **iperf3 双路灌包**：`iperf/adaptive/` 为带反馈调整，`iperf/fixed/` 为固定各50%。每个目录各有 `send/start.cmd` 和 `receive/start.cmd`，详情见[iperf启动与配置](iperf/README.md)。下面仍是原文件测试的使用说明。
+四种模式：`iperf/adaptive/`双路反馈、`iperf/fixed/`双路五五、`iperf/lan_only/`仅局域网、`iperf/cpe_only/`仅CPE。发送端、接收端分别双击所选模式内的`send/start.cmd`、`receive/start.cmd`。局域网单路不需要公网或CPE，工具可提前离线复制。详见[iperf启动与配置](iperf/README.md)。
+
+根目录的`send/receive`仍保留原UDP文件下载模式，以下是该模式原有的表7定时测试说明。原1008CPE视频工程保持独立。
 
 ## 标准规格与计数口径
 

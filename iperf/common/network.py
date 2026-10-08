@@ -14,29 +14,46 @@ def ipv4(value):
     return str(address)
 
 
+def active_branches(mode):
+    """单路模式从配置、路由到连接全过程都不访问另一支路。"""
+    if mode == "lan_only":
+        return ("lan",)
+    if mode == "cpe_only":
+        return ("cpe",)
+    if mode in ("adaptive", "fixed"):
+        return ("lan", "cpe")
+    raise ValueError("未知链路模式：" + mode)
+
+
 def prepare(config, config_path, overrides, loopback=False):
+    names = active_branches(config["mode"])
     local_path = Path(config_path).with_name("config.local.json")
     local = json.loads(local_path.read_text(encoding="utf-8-sig")) if local_path.exists() else {}
-    for name in ("lan", "cpe"):
+    for name in names:
         config[name].update({key: value for key, value in local.get(name, {}).items()
                              if key in ("sender_ip", "bind_ip", "gateway")})
         config[name].update({k: v for k, v in overrides[name].items() if v is not None})
     if loopback:
-        for n, ip in (("lan", "127.0.0.1"), ("cpe", "127.0.0.2")):
+        for n in names:
+            ip = "127.0.0.1" if n == "lan" else "127.0.0.2"
             config[n].update(sender_ip=ip, bind_ip="127.0.0.1")
         return config
     interactive = sys.stdin.isatty()
     for name, label in (("lan", "Wi-Fi/手机USB"), ("cpe", "CPE专网")):
+        if name not in names:
+            continue
         if not config[name].get("sender_ip"):
             if not interactive:
                 raise ValueError("缺少发送端 " + label + " 地址；双击启动填写，或使用 --" + name + "-host。")
             config[name]["sender_ip"] = input("输入发送端在" + label + "方向可达的IPv4：").strip()
         config[name]["sender_ip"] = ipv4(config[name]["sender_ip"])
-    if config["lan"]["sender_ip"] == config["cpe"]["sender_ip"]:
+    if len(names) == 2 and config["lan"]["sender_ip"] == config["cpe"]["sender_ip"]:
         raise ValueError("两路发送端目标地址相同，会导致 /32 出口冲突。请提供两个不同的可达地址。")
     rows = windows_interfaces() if sys.platform == "win32" else []
     selected = []
     for name, label in (("lan", "Wi-Fi/手机USB"), ("cpe", "CPE专网")):
+        if name not in names:
+            continue
         branch = config[name]
         if rows:
             # 包括没有默认网关的直连业务接口；由用户确认角色，不猜测未知专网网关。
@@ -74,10 +91,10 @@ def prepare(config, config_path, overrides, loopback=False):
                 ensure_host_route(branch["sender_ip"], gateway, row["index"])
         else:
             branch["bind_ip"] = ipv4(branch.get("bind_ip", ""))
-    if config["lan"]["bind_ip"] == config["cpe"]["bind_ip"]:
+    if len(names) == 2 and config["lan"]["bind_ip"] == config["cpe"]["bind_ip"]:
         raise ValueError("两路不能绑定同一个接收地址。")
     local_path.write_text(json.dumps({n: {k: config[n][k] for k in ("sender_ip", "bind_ip", "gateway")
-                                         if k in config[n]} for n in ("lan", "cpe")},
+                                         if k in config[n]} for n in names},
                                      ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("本机地址配置已保存：", local_path)
     return config

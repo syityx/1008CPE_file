@@ -295,7 +295,7 @@ def receiver(mode, args, config, config_path):
     return 0 if summary["completed"] else 1
 
 
-def main(mode, role):
+def main(mode, role, argv=None):
     parser = argparse.ArgumentParser(description="真正iperf3两路反向UDP：" + mode + "/" + role)
     parser.add_argument("--config", default=str(ROOT / mode / "config.json"))
     parser.add_argument("--iperf", help="已有iperf3的完整路径；Windows默认自动下载3.22")
@@ -310,7 +310,7 @@ def main(mode, role):
     parser.add_argument("--profile", choices=["custom", "small", "medium", "large", "standard"], default="custom")
     parser.add_argument("--output", help="新的结果目录，不能覆盖已有目录")
     parser.add_argument("--loopback-test", action="store_true", help="仅回环测试，显式允许一张网卡")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         config = load_config(mode, args.config)
         for arg, key in ((args.rate, "total_bps"), (args.duration, "duration_seconds"), (args.epoch, "epoch_seconds")):
