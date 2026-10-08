@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -20,7 +21,7 @@ import file_protocol as files
 import network_setup
 import protocol as wire
 from send import fuzzy_pid
-from standard_model import make_plan, create_standard_files, PreciseTimer
+from standard_model import make_plan, create_standard_files, PreciseTimer, wait_until
 
 LOG = logging.getLogger("files")
 
@@ -173,12 +174,13 @@ class FileSender:
                         entries = {item["name"]: item for item in self.manifest}
                         if any(entries.get(p["name"], {}).get("size") != p["size"] for p in plan):
                             raise ValueError("发送端文件大小不符合表7，请使用标准文件目录。")
-                        self.session = dict(id=session_id, plan=plan, start_ns=time.monotonic_ns() + 2_000_000_000)
+                        # perf_counter_ns在Python3.8/Windows也有高精度，旧monotonic可能较粗。
+                        self.session = dict(id=session_id, plan=plan, start_ns=time.perf_counter_ns() + 2_000_000_000)
                         self.started_jobs.clear()
                     elif self.session["plan"] != plan:
                         raise ValueError("同一会话的标准参数不能改变。")
                     reply = self.control("file_session_reply", request_id=identity, session_id=session_id,
-                                         start_ns=self.session["start_ns"], server_now_ns=time.monotonic_ns(), plan=plan)
+                                         start_ns=self.session["start_ns"], server_now_ns=time.perf_counter_ns(), plan=plan)
                 sock.sendto(reply, address)
                 return
             if message["kind"] == "file_manifest":
@@ -217,7 +219,7 @@ class FileSender:
                 with self.session_lock:
                     if not self.session or message["session_id"] != self.session["id"]:
                         raise ValueError("标准会话已改变。")
-                    start_ns = self.started_jobs.setdefault(key, time.monotonic_ns())
+                    start_ns = self.started_jobs.setdefault(key, time.perf_counter_ns())
                     # 只保留最近4096个任务供重传复用，避免一小时测试不断增加内存。
                     while len(self.started_jobs) > 4096:
                         self.started_jobs.pop(next(iter(self.started_jobs)))
@@ -248,14 +250,11 @@ class FileSender:
                 if type(index) is not int or not 0 <= index < len(self.manifest) or self.manifest[index]["name"] != spec["name"]:
                     raise ValueError("标准任务与请求文件不匹配。")
                 due = session["start_ns"] + spec["offset_ns"] + number * spec["interval_ns"]
-            remaining = (due - time.monotonic_ns()) / 1e9
+            remaining = (due - time.perf_counter_ns()) / 1e9
             if remaining > 2:
                 raise ValueError("标准任务请求提前超过2秒，请检查预请求窗口。")
-            # Windows等待可能向下取整，反复检查绝对期限，禁止提前发业务包。
-            while remaining > 0:
-                if self.stop.wait(min(remaining, 0.1)):
-                    return
-                remaining = (due - time.monotonic_ns()) / 1e9
+            if not wait_until(due, self.stop):
+                return
             self.answer(lane, sock, address, message)
         except (OSError, ValueError) as exc:
             if not self.stop.is_set():
@@ -267,7 +266,11 @@ class FileSender:
         self.stop.set()
         for thread in self.threads:
             thread.join(1)
-        self.standard_pool.shutdown(wait=True, cancel_futures=True)
+        # Python 3.8尚无cancel_futures；stop已设置，等待中的发送任务会自行退出。
+        if sys.version_info >= (3, 9):
+            self.standard_pool.shutdown(wait=True, cancel_futures=True)
+        else:
+            self.standard_pool.shutdown(wait=True)
         for sock in self.sockets:
             sock.close()
         if self.timer:

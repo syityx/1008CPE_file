@@ -8,7 +8,9 @@ $env:PYTHONUTF8 = '1'
 
 function Find-ExperimentPython([string]$PreferredPath) {
     # 不在-c中嵌套字符串引号，兼容Windows PowerShell 5.1的参数传递规则。
-    $probe = 'import sys; sys.exit(10) if sys.version_info < (3,10) else print(sys.executable)'
+    $minimumTuple = if ($Role -eq 'send') { '(3,8)' } else { '(3,10)' }
+    $minimumVersion = if ($Role -eq 'send') { '3.8' } else { '3.10' }
+    $probe = 'import sys; sys.exit(10) if sys.version_info < {0} else print(sys.executable)' -f $minimumTuple
     $candidates = @()
     if ($PreferredPath) { $candidates += @{Path=$PreferredPath; Args=@()} }
     foreach ($name in @('py','python','python3')) {
@@ -44,7 +46,7 @@ function Find-ExperimentPython([string]$PreferredPath) {
             $failures += "$($candidate.Path) (调用失败)"
         }
     }
-    throw ('未找到可运行的Python 3.10或更新版本。已尝试：' + ($failures -join '；'))
+    throw ('未找到可运行的Python ' + $minimumVersion + '或更新版本。已尝试：' + ($failures -join '；'))
 }
 
 try {

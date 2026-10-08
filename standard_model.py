@@ -5,6 +5,7 @@
 """
 import ctypes
 import sys
+import time
 from pathlib import Path
 
 SPECS = {
@@ -67,3 +68,49 @@ class PreciseTimer:
     def __exit__(self, *_):
         if self.active:
             ctypes.windll.winmm.timeEndPeriod(1)
+
+
+def wait_until(due_ns, stop):
+    """按perf_counter时钟等待，旧Windows Python也使用高精度内核定时器。
+
+Event.wait在旧Python/Windows上可能按约15.6ms取整。使用Windows10的
+高精度waitable timer，每次最多等待100ms，兼顾定时精度和退出响应。
+旧系统不提供该功能时回退；真实计时误差仍由结果如实记录。
+    """
+    handle = None
+    if sys.platform == "win32":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel.CreateWaitableTimerExW
+        create.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+        create.restype = wintypes.HANDLE
+        set_timer = kernel.SetWaitableTimer
+        set_timer.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong), wintypes.LONG,
+                             ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL]
+        set_timer.restype = wintypes.BOOL
+        wait = kernel.WaitForSingleObject
+        wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        wait.restype = wintypes.DWORD
+        close = kernel.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        # CREATE_WAITABLE_TIMER_HIGH_RESOLUTION，权限仅修改定时器和等待。
+        handle = create(None, None, 0x2, 0x00100002)
+    try:
+        while not stop.is_set():
+            remaining = (due_ns - time.perf_counter_ns()) / 1e9
+            if remaining <= 0:
+                return True
+            seconds = min(remaining, 0.1)
+            if handle:
+                due = ctypes.c_longlong(-max(1, int(seconds * 10_000_000)))
+                if not set_timer(handle, ctypes.byref(due), 0, None, None, False):
+                    raise OSError(ctypes.get_last_error(), "无法设置高精度发送定时器")
+                if wait(handle, 1000) != 0:
+                    raise OSError(ctypes.get_last_error(), "高精度发送定时器等待失败")
+            elif stop.wait(seconds):
+                return False
+        return False
+    finally:
+        if handle:
+            close(handle)
