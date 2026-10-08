@@ -1,7 +1,8 @@
 """1008CPE_file两路文件下载：发送端供文件，接收端调度/合并，云端仅转发。
 
 沿用Wi-Fi/USB主动注册、CPE保活、云端地址发现。UDP上补充有限重试、
-缺片重传和SHA256校验；单路每次一个在途文件块，不跨路抢块或跳过缺块。
+缺片重传和SHA256校验；旧循环每路一个在途块，标准模式允许并发请求，
+两种模式都不跨路抢块或跳过缺块。
 """
 import csv
 import hashlib
@@ -386,44 +387,74 @@ class DownloadTransport:
                 self.condition.wait(0.1)
         LOG.info("注册LAN/CPE=True/True，开始循环文件下载")
 
-    def request(self, lane, kind, with_timing=False, **fields):
+    def begin_request(self, lane, kind, with_timing=False, **fields):
+        """立即发出请求，不占用等待线程；标准模式由主循环轮询完成/重传。"""
+        if self.stop.is_set():
+            raise Cancelled()
         identity = uuid.uuid4().hex
         box = dict(lane=lane, reply=None, parts={}, **fields)
+        box.update(kind=kind, fields=fields, with_timing=with_timing, attempt=0,
+                   deadline=time.monotonic() + self.config.get("file_request_timeout", 1.0))
         if kind == "file_block":
             box["total"] = files.fragment_count(fields["size"])
         with self.condition:
             self.pending[identity] = box
         try:
-            for attempt in range(self.config.get("file_max_retries", 5) + 1):
-                if self.stop.is_set():
-                    raise Cancelled()
+            self.sockets[lane].sendto(self.control(kind, request_id=identity, **fields), self.targets[lane])
+        except Exception:
+            self.end_request(identity)
+            raise
+        return identity
+
+    def poll_request(self, identity):
+        """返回完成结果或None；超时仅重传同一路缺片，首包时间缺失时补取。"""
+        if self.stop.is_set():
+            raise Cancelled()
+        with self.condition:
+            box = self.pending[identity]
+            lane, kind, attempt = box["lane"], box["kind"], box["attempt"]
+            if box["reply"]:
+                if box["reply"]["kind"] == "file_error":
+                    raise ValueError(box["reply"].get("error", "发送端拒绝请求"))
+                return box["reply"], attempt
+            if kind == "file_block" and len(box["parts"]) == box["total"] and (
+                    not box["with_timing"] or box.get("sent_ns")):
+                data = b"".join(box["parts"][i] for i in range(box["total"]))
+                return (data, attempt, box.get("sent_ns")) if box["with_timing"] else (data, attempt)
+            if time.monotonic() < box["deadline"]:
+                return None
+            if attempt >= self.config.get("file_max_retries", 5):
+                raise TimeoutError("链路%s请求失败，超过重试次数；不跳过缺块、不自动换路。" % lane)
+            request = dict(box["fields"])
+            if kind == "file_block":
+                missing = [i for i in range(box["total"]) if i not in box["parts"]]
+                request["missing"] = missing or ([0] if box["with_timing"] else missing)
+            box["attempt"] += 1
+            box["deadline"] = time.monotonic() + self.config.get("file_request_timeout", 1.0)
+            self.retries[lane] += 1
+            target = self.targets[lane]
+        self.sockets[lane].sendto(self.control(kind, request_id=identity, **request), target)
+        return None
+
+    def end_request(self, identity):
+        """完成、失败或取消后释放请求缓存。"""
+        with self.condition:
+            self.pending.pop(identity, None)
+
+    def request(self, lane, kind, with_timing=False, **fields):
+        """旧循环模式和握手保留同步接口，共用同一套缺片/计时重传逻辑。"""
+        identity = self.begin_request(lane, kind, with_timing, **fields)
+        try:
+            while True:
                 with self.condition:
-                    target = self.targets[lane]
-                    missing = [i for i in range(box.get("total", 0)) if i not in box["parts"]]
-                request = dict(fields)
-                if kind == "file_block" and attempt:
-                    request["missing"] = missing or ([0] if with_timing else missing)
-                self.sockets[lane].sendto(self.control(kind, request_id=identity, **request), target)
-                deadline = time.monotonic() + self.config.get("file_request_timeout", 1.0)
-                with self.condition:
-                    while not self.stop.is_set():
-                        if box["reply"]:
-                            if box["reply"]["kind"] == "file_error":
-                                raise ValueError(box["reply"].get("error", "发送端拒绝请求"))
-                            return box["reply"], attempt
-                        if kind == "file_block" and len(box["parts"]) == box["total"] and (not with_timing or box.get("sent_ns")):
-                            data = b"".join(box["parts"][i] for i in range(box["total"]))
-                            return (data, attempt, box.get("sent_ns")) if with_timing else (data, attempt)
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        self.condition.wait(min(remaining, 0.1))
-                if attempt < self.config.get("file_max_retries", 5):
-                    self.retries[lane] += 1
-            raise TimeoutError("链路%s请求失败，超过重试次数；不跳过缺块、不自动换路。" % lane)
+                    # 检查结果和进入等待保持原子性，避免在两者之间收到包却漏掉唤醒。
+                    result = self.poll_request(identity)
+                    if result is not None:
+                        return result
+                    remaining = self.pending[identity]["deadline"] - time.monotonic()
+                    self.condition.wait(max(0, min(remaining, 0.1)))
         finally:
-            with self.condition:
-                self.pending.pop(identity, None)
+            self.end_request(identity)
 
     def close(self):
         self.stop.set()

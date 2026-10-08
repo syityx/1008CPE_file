@@ -1,5 +1,6 @@
 """真实UDP标准模型验证：发送端定时、三类尺寸/次数、并发下载和首包测量。"""
 import csv
+import json
 import tempfile
 import time
 import unittest
@@ -53,13 +54,16 @@ class StandardTests(unittest.TestCase):
 
     def test_small_sender_schedule_independent_of_completion(self):
         source, _, _, transport, downloader = self.setup_standard()
-        original = transport.request
-        def delayed(*args, **kwargs):
-            response = original(*args, **kwargs)
-            if len(args) > 1 and args[1] == "file_block":
-                time.sleep(0.08)  # 每次下载完成比20ms周期更慢，仍须按计划发包。
-            return response
-        with patch.object(transport, "request", side_effect=delayed):
+        original = transport.poll_request
+        ready = {}
+        def delayed(identity):
+            response = original(identity)
+            if response is None:
+                return None
+            # 每次下载完成比20ms周期更慢，仍须按计划发包；不能阻塞调度线程。
+            until = ready.setdefault(identity, time.monotonic() + 0.08)
+            return response if time.monotonic() >= until else None
+        with patch.object(transport, "poll_request", side_effect=delayed):
             result = downloader.run()
         self.assertTrue(result["counts_complete"])
         self.assertFalse(result["full_standard_counts"])
@@ -90,7 +94,8 @@ class StandardTests(unittest.TestCase):
         self.assertTrue(all(row["sender_start_ns"] and row["status"] == "complete" for row in rows))
 
     def test_lost_start_metadata_retried_with_original_sender_timestamp(self):
-        _, relay, _, _, downloader = self.setup_standard(count=10)
+        # 100次20ms业务跨过32任务旧窗口：首个业务缺计时回复，后续仍应按时请求。
+        _, relay, _, transport, downloader = self.setup_standard(count=100)
         original = relay.register
         dropped = False
         def lossy(packet, address):
@@ -105,7 +110,39 @@ class StandardTests(unittest.TestCase):
         self.assertTrue(dropped)
         self.assertTrue(result["counts_complete"])
         self.assertGreaterEqual(result["retries"][1], 1)
+        self.assertGreater(result["peak_queued_jobs"], 32)
+        self.assertFalse(transport.pending)
         self.assertLess(result["max_sender_lateness_ms"], 100)
+
+    def test_more_than_32_slow_requests_do_not_starve_new_business(self):
+        _, _, _, transport, downloader = self.setup_standard(count=80)
+        original = transport.poll_request
+        ready = {}
+        def delayed(identity):
+            response = original(identity)
+            if response is None:
+                return None
+            until = ready.setdefault(identity, time.monotonic() + 0.8)
+            return response if time.monotonic() >= until else None
+        with patch.object(transport, "poll_request", side_effect=delayed):
+            result = downloader.run()
+        self.assertTrue(result["counts_complete"])
+        self.assertGreater(result["peak_active_requests"], 32)
+        self.assertFalse(transport.pending)
+        with (downloader.output / "files.csv").open(encoding="utf-8-sig", newline="") as stream:
+            stamps = [int(row["sender_start_ns"]) for row in csv.DictReader(stream)]
+        self.assertLess((stamps[-1] - stamps[0]) / 1e9, 1.8)
+
+    def test_standard_broken_lane_reports_retry_failure_and_releases_requests(self):
+        _, relay, _, transport, downloader = self.setup_standard(count=80)
+        # 请求和计时回复保持可达，但云端数据支路完全断开；不得伪装为下载成功。
+        with patch.object(relay, "forward", return_value=None):
+            with self.assertRaisesRegex(TimeoutError, "超过重试次数"):
+                downloader.run()
+        self.assertFalse(transport.pending)
+        result = json.loads((downloader.output / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["reason"], "error")
+        self.assertFalse(result["counts_complete"])
 
     def test_timing_miss_reported_separately_from_successful_download(self):
         _, _, _, _, downloader = self.setup_standard(count=4)

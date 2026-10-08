@@ -11,7 +11,6 @@ import math
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 
 from file_transfer import FileDownloader, Cancelled
 from standard_model import make_plan, planned_jobs, PreciseTimer
@@ -34,14 +33,18 @@ class StandardDownloader(FileDownloader):
         self.timing_violations = 0
         self.max_lateness_ms = 0.0
         self.last_sent = {}
-
-    def fetch_standard_block(self, lane, job, block, size):
-        before = time.monotonic()
-        data, retries, sent_ns = self.transport.request(
-            lane, "file_block", with_timing=True, file_index=job["index"],
-            offset=block * self.block_size, size=size, session_id=self.session_id,
-            profile=job["profile"], number=job["number"])
-        return data, retries, time.monotonic() - before, sent_ns
+        timeout = config.get("file_request_timeout", 1.0)
+        retries = config.get("file_max_retries", 5)
+        if not math.isfinite(timeout) or timeout <= 0 or type(retries) is not int or retries < 0:
+            raise ValueError("请求超时必须为正有限数，重试次数必须为非负整数。")
+        # 32块滑窗不能同时用作20ms业务的排队上限：一次1秒重传就可能积压50个业务。
+        # 按预请求时间+完整重试期限计算业务缓存，另留两个周期的调度余量。
+        horizon = self.lead + timeout * (retries + 1)
+        self.job_windows = {p["profile"]: max(self.window, math.ceil(horizon / (p["interval_ns"] / 1e9)) + 2)
+                            for p in self.plan}
+        if max(self.job_windows.values()) > 4096:
+            raise ValueError("标准业务缓存超过4096个任务，请减小请求超时或重试次数。")
+        self.peak_jobs = self.peak_active = 0
 
     def finish_job(self, job):
         item = job["item"]
@@ -117,41 +120,56 @@ class StandardDownloader(FileDownloader):
                                                         ensure_ascii=False, indent=2), encoding="utf-8")
         plan_seconds = sum(p["count"] * p["interval_ns"] for p in self.plan) / 1e9
         LOG.info("表7标准任务=%s，周期窗口=%.3fs；发送端定时，单位按1000换算", {p["profile"]: p["count"] for p in self.plan}, plan_seconds)
+        LOG.info("标准业务缓存上限=%s；异步等待重传，不阻塞后续业务请求", self.job_windows)
         tasks = iter(planned_jobs(self.plan))
         upcoming = next(tasks, None)
         jobs, active, pending = deque(), {}, {}
         issued = expected = 0
         last_feedback = 0.0
-        pool = ThreadPoolExecutor(max_workers=32)
         try:
             with PreciseTimer():
                 while upcoming is not None or jobs or time.monotonic() < self.local_start + plan_seconds:
                     self.tick()
                     now = time.monotonic()
                     while upcoming and now >= self.local_start + upcoming["due_ns"] / 1e9 - self.lead:
-                        if len(jobs) >= self.window:
-                            raise ValueError("标准业务积压超过窗口，无法维持表7负载；测试中止，不降低发包频率。")
+                        capacity = self.job_windows[upcoming["profile"]]
+                        # 类型切换时让上一类尚在重传期限内的任务使用原有缓存上限。
+                        limit = max([capacity] + [j["capacity"] for j in jobs])
+                        if len(jobs) >= limit:
+                            raise ValueError("标准业务缓存已满：积压=%s，上限=%s，在途请求=%s，待合并块=%s，"
+                                             "LAN/CPE重试=%s；测试中止，请检查链路延迟或丢包。" %
+                                             (len(jobs), limit, len(active), len(pending), self.transport.retries))
                         job = dict(upcoming)
                         job["index"], job["item"] = entries[job["spec"]["name"]]
                         job.update(blocks=math.ceil(job["item"]["size"] / self.block_size), next_block=0,
                                    committed=0, stream=None, digest=hashlib.sha256(), sent_ns=None,
                                    absolute_due_ns=self.server_start + job["due_ns"], released=now,
-                                   part=self.output / "downloads" / (job["item"]["name"] + ".part"))
+                                   capacity=capacity, part=self.output / "downloads" / (job["item"]["name"] + ".part"))
                         jobs.append(job)
                         upcoming = next(tasks, None)
                     for job in jobs:
-                        while job["next_block"] < job["blocks"] and issued - expected < self.window:
+                        # 单块小/中业务允许覆盖重传期限；多块大文件仍使用原有在途块上限。
+                        request_limit = job["capacity"] if job["blocks"] == 1 else self.window
+                        while job["next_block"] < job["blocks"] and len(active) < request_limit:
                             lane = self.choose()
                             block = job["next_block"]
                             size = min(self.block_size, job["item"]["size"] - block * self.block_size)
-                            future = pool.submit(self.fetch_standard_block, lane, job, block, size)
-                            active[issued] = (lane, job, block, future)
+                            identity = self.transport.begin_request(
+                                lane, "file_block", with_timing=True, file_index=job["index"],
+                                offset=block * self.block_size, size=size, session_id=self.session_id,
+                                profile=job["profile"], number=job["number"])
+                            active[issued] = (lane, job, block, identity, time.monotonic())
                             issued += 1
                             job["next_block"] += 1
                     changed = False
-                    for ordinal, (lane, job, block, future) in list(active.items()):
-                        if future.done():
-                            data, retries, seconds, sent_ns = future.result()
+                    self.peak_jobs = max(self.peak_jobs, len(jobs))
+                    self.peak_active = max(self.peak_active, len(active))
+                    for ordinal, (lane, job, block, identity, requested) in list(active.items()):
+                        response = self.transport.poll_request(identity)
+                        if response is not None:
+                            data, retries, sent_ns = response
+                            self.transport.end_request(identity)
+                            seconds = time.monotonic() - requested
                             pending[ordinal] = (lane, data, job)
                             job["sent_ns"] = sent_ns if job["sent_ns"] is None else min(job["sent_ns"], sent_ns)
                             self.blocks.writerow([job["sequence"], job["item"]["name"], block, lane, len(data), retries, seconds])
@@ -185,7 +203,8 @@ class StandardDownloader(FileDownloader):
             self.stop.set()
             with self.transport.condition:
                 self.transport.condition.notify_all()
-            pool.shutdown(wait=True, cancel_futures=True)
+            for _, _, _, identity, _ in active.values():
+                self.transport.end_request(identity)
             for job in jobs:
                 if job["stream"]:
                     job["stream"].close()
@@ -206,6 +225,8 @@ class StandardDownloader(FileDownloader):
                           counts_complete=complete, timing_ok=complete and self.timing_violations == 0,
                           timing_tolerance_ms=self.tolerance_ms, timing_violations=self.timing_violations,
                           max_sender_lateness_ms=self.max_lateness_ms, planned_seconds=plan_seconds,
+                          standard_job_windows=self.job_windows, peak_queued_jobs=self.peak_jobs,
+                          peak_active_requests=self.peak_active,
                           finished_counts=self.finished_counts, completed_files=self.completed,
                           assigned_blocks=self.assigned, received_bytes=current, retries=self.transport.retries,
                           g=self.g, pid_updates=self.updates, elapsed=now - self.started, results_dir=str(self.output))
