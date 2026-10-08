@@ -212,10 +212,10 @@ def sender(mode, args, config):
 
 
 def receiver(mode, args, config, config_path):
+    exe, version = resolve_iperf(args.iperf)
     overrides = {name: {"sender_ip": getattr(args, name + "_host"), "bind_ip": getattr(args, name + "_ip")}
                  for name in ("lan", "cpe")}
     config = prepare(config, config_path, overrides, args.loopback_test)
-    exe, version = resolve_iperf(args.iperf)
     output = Path(args.output) if args.output else ROOT / mode / "results" / datetime.now().strftime("receive_%Y%m%d_%H%M%S_%f")
     output.mkdir(parents=True, exist_ok=False)
     (output / "effective_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -298,7 +298,7 @@ def receiver(mode, args, config, config_path):
 def main(mode, role, argv=None):
     parser = argparse.ArgumentParser(description="真正iperf3两路反向UDP：" + mode + "/" + role)
     parser.add_argument("--config", default=str(ROOT / mode / "config.json"))
-    parser.add_argument("--iperf", help="已有iperf3的完整路径；Windows默认自动下载3.22")
+    parser.add_argument("--iperf", help="已有iperf3完整路径；缺少组件直接报错")
     parser.add_argument("--listen-ip", default="0.0.0.0")
     parser.add_argument("--lan-host")
     parser.add_argument("--cpe-host")

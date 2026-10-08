@@ -50,7 +50,7 @@ iperf/
 
 `lan_only`从启动到传输都不访问公网、云端或CPE。工具需要事先准备：将已安装的 `iperf/tools/runtime/iperf3.exe` 和 `cygwin1.dll` 一起复制到两台电脑相同目录，再双击启动。未找到工具会直接提示，不尝试联网下载。
 
-其他模式首次可自动下载固定Windows版本3.22；也能按上述方式离线准备。工具来源、SHA256和许可证链接见[tools/README.md](tools/README.md)。可用 `--iperf 完整路径` 指定已有程序。
+所有模式均需事先准备本机组件，启动时不会自动下载或安装。缺少 `iperf3.exe`、该构建所需的 `cygwin1.dll` 等组件时，直接显示缺失项及路径并停止启动。工具来源、SHA256和许可证链接见[tools/README.md](tools/README.md)。可用 `--iperf 完整路径` 指定已有程序。
 
 ## 实际文件与分流
 

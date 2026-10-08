@@ -1,65 +1,60 @@
-"""定位真正的 iperf3，Windows 首次使用下载固定版本并校验 SHA256。"""
-import hashlib
+"""检查已准备的真实iperf3；缺组件直接报错，不下载或安装。"""
+import argparse
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import urllib.request
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "3.22"
-URL = "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip"
-SHA256 = "c9feabb3d721039508ccb81f74c2ada3ae11b9e75d33d24510573c2aa21da420"
 
 
-def install_windows():
-    if os.name != "nt":
-        raise ValueError("Linux 请先安装 iperf3，例如 sudo apt install iperf3。")
-    folder = ROOT / "tools" / "runtime"
-    folder.mkdir(parents=True, exist_ok=True)
-    archive = ROOT / "tools" / "iperf-3.22.zip"
-    print("首次下载 iperf3 3.22（第三方 Windows 构建，约 1.2 MB）…", flush=True)
-    with urllib.request.urlopen(URL, timeout=60) as response:
-        payload = response.read(5 * 1024 * 1024)
-    if hashlib.sha256(payload).hexdigest() != SHA256:
-        raise ValueError("iperf 压缩包 SHA256 不符，停止安装。")
-    archive.write_bytes(payload)
-    # 只提取运行必需的两个文件；不执行下载包中的脚本。
-    with zipfile.ZipFile(archive) as source:
-        for name in ("iperf3.exe", "cygwin1.dll"):
-            entries = [entry for entry in source.namelist() if Path(entry).name == name]
-            if len(entries) != 1:
-                raise ValueError("iperf 压缩包缺少运行文件：" + name)
-            (folder / name).write_bytes(source.read(entries[0]))
-    return folder / "iperf3.exe"
-
-
-def resolve_iperf(explicit=None, allow_download=True):
+def resolve_iperf(explicit=None):
     bundled = ROOT / "tools" / "runtime" / "iperf3.exe"
     if explicit:
         path = Path(explicit).expanduser().resolve()
     elif os.name == "nt":
-        # 同一 Windows 实验优先使用固定版本，避免 PATH 中旧版的 JSON 差异。
-        if not bundled.is_file() and not allow_download:
-            raise ValueError("局域网离线模式不会访问公网下载。请事先将iperf3.exe和cygwin1.dll放入iperf/tools/runtime，或指定--iperf。")
-        path = bundled if bundled.is_file() else install_windows()
+        path = bundled
     else:
         found = shutil.which("iperf3")
         if not found:
-            raise ValueError("未找到真实 iperf3，请先安装或指定 --iperf。")
+            raise ValueError("缺少组件：iperf3。请自行安装，或用 --iperf 指定已有程序。")
         path = Path(found)
-    if not path.is_file():
-        raise ValueError("找不到 iperf3：" + str(path))
+    required = [path]
+    if os.name == "nt":
+        # 默认包使用Cygwin；其他构建只在引用该DLL时检查，不强制静态构建携带DLL。
+        uses_cygwin = path == bundled.resolve()
+        if path.is_file() and not uses_cygwin:
+            uses_cygwin = b"cygwin1.dll" in path.read_bytes().lower()
+        if uses_cygwin:
+            required.append(path.with_name("cygwin1.dll"))
+    missing = [str(item) for item in required if not item.is_file()]
+    if missing:
+        raise ValueError("缺少组件：\n" + "\n".join("  " + item for item in missing) +
+                         "\n请自行准备对应iperf发行包；默认放入iperf/tools/runtime，也可用--iperf指定已有程序。")
     result = subprocess.run([str(path), "--version"], capture_output=True,
                             text=True, encoding="utf-8", errors="replace", timeout=10)
     version = (result.stdout + result.stderr).strip()
     if result.returncode or not version.startswith("iperf 3."):
-        raise ValueError("指定程序不是可运行的 iperf3：" + version)
+        raise ValueError("iperf3无法运行：" + str(path) + f"，退出码={result.returncode}。" +
+                         (version or "请检查该发行包的运行DLL及系统架构是否匹配。"))
     return str(path), version
 
 
+def main():
+    parser = argparse.ArgumentParser(description="只检查本机iperf组件，不访问下载地址")
+    parser.add_argument("--iperf", help="已有iperf3完整路径")
+    parser.add_argument("--path-only", action="store_true", help="检查成功后只输出程序路径，供启动脚本使用")
+    args = parser.parse_args()
+    try:
+        path, version = resolve_iperf(args.iperf)
+        print(path)
+        if not args.path_only:
+            print(version)
+        return 0
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        print("组件检查失败：" + str(error))
+        return 1
+
+
 if __name__ == "__main__":
-    path, version = resolve_iperf()
-    print(path)
-    print(version)
+    raise SystemExit(main())

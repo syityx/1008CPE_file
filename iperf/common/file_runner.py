@@ -170,7 +170,7 @@ def one_batch(exe, config, names, manifests, profile, count, ratio, output, epoc
 
 def sender(mode, args, config):
     names = active_branches(mode)
-    exe, version = resolve_iperf(args.iperf, allow_download=mode != "lan_only")
+    exe, version = resolve_iperf(args.iperf)
     sources = Path(args.files_dir).resolve() if args.files_dir else PROJECT / "send" / "standard_files"
     folder = ROOT / mode / "results" / datetime.now().strftime("send_%Y%m%d_%H%M%S_%f")
     folder.mkdir(parents=True)
@@ -205,10 +205,11 @@ def sender(mode, args, config):
 
 
 def receiver(mode, args, config):
+    # 在填写地址、保存配置或设置路由前检查工具，缺组件时直接退出。
+    exe, version = resolve_iperf(args.iperf)
     names = active_branches(mode)
     overrides = {n: dict(sender_ip=getattr(args, n + "_host"), bind_ip=getattr(args, n + "_ip")) for n in names}
     config = prepare(config, args.config, overrides, args.loopback_test)
-    exe, version = resolve_iperf(args.iperf, allow_download=mode != "lan_only")
     output = Path(args.output) if args.output else ROOT / mode / "results" / datetime.now().strftime("receive_%Y%m%d_%H%M%S_%f")
     output.mkdir(parents=True, exist_ok=False)
     (output / "effective_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")

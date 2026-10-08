@@ -88,13 +88,28 @@ class StandardSourceTests(unittest.TestCase):
             self.assertLessEqual(block, 65536)
             self.assertEqual(length % block, 0)
 
-    def test_lan_offline_cannot_call_downloader(self):
+    def test_missing_components_do_not_access_network_or_run_process(self):
         with patch("iperf.common.runtime.os.name", "nt"), \
              patch("pathlib.Path.is_file", return_value=False), \
-             patch("iperf.common.runtime.install_windows") as download:
-            with self.assertRaises(ValueError):
-                resolve_iperf(allow_download=False)
-            download.assert_not_called()
+             patch("urllib.request.urlopen") as network, \
+             patch("iperf.common.runtime.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "缺少组件") as error:
+                resolve_iperf()
+            self.assertIn("iperf3.exe", str(error.exception))
+            self.assertIn("cygwin1.dll", str(error.exception))
+            network.assert_not_called()
+            run.assert_not_called()
+
+    def test_missing_cygwin_dll_stops_before_executable_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "iperf3.exe"
+            exe.write_bytes(b"test executable importing cygwin1.dll")
+            with patch("iperf.common.runtime.os.name", "nt"), \
+                 patch("iperf.common.runtime.subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "缺少组件") as error:
+                    resolve_iperf(exe)
+                self.assertIn(str(exe.with_name("cygwin1.dll")), str(error.exception))
+                run.assert_not_called()
 
 
 if __name__ == "__main__":

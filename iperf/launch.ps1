@@ -17,16 +17,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw '需要可运行的Python 3.10或更新版本。' }
         $PythonPath = ([string]($pythonOutput | Select-Object -Last 1)).Trim()
     }
-    if (-not $IperfPath) {
-        $IperfPath = Join-Path $PSScriptRoot 'tools\runtime\iperf3.exe'
-        if ($Mode -eq 'lan_only' -and -not (Test-Path -LiteralPath $IperfPath)) {
-            throw '局域网离线模式不会下载工具。请预先复制iperf3.exe和cygwin1.dll到iperf/tools/runtime。'
-        }
-        if ($Mode -ne 'lan_only') {
-            & $PythonPath -m iperf.common.runtime
-            if ($LASTEXITCODE -ne 0) { throw 'iperf3安装或校验失败，请检查下载网络。' }
-        }
-    }
+    # 所有模式统一做本机组件检查；先检查再提权，不访问网络或自动安装。
+    $runtimeArguments = @('-m','iperf.common.runtime','--path-only')
+    if ($IperfPath) { $runtimeArguments += @('--iperf',$IperfPath) }
+    $componentOutput = & $PythonPath @runtimeArguments
+    if ($LASTEXITCODE -ne 0) { throw ($componentOutput -join [Environment]::NewLine) }
+    $IperfPath = ([string]($componentOutput | Select-Object -Last 1)).Trim()
     if ($CheckOnly) { Write-Output "Python=$PythonPath; iperf=$IperfPath"; exit 0 }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
