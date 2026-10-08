@@ -10,5 +10,6 @@
   "cloud_control_port": 30017,
   "announce_interval": 3,
   "file_burst_packets": 8,
-  "file_burst_interval": 0.001
+  "file_burst_interval": 0.001,
+  "file_test_model": "standard"
 }

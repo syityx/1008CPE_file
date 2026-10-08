@@ -13,8 +13,8 @@ MAGIC = b"FZF1"
 FRAGMENT_BYTES = 1200
 HEADER = struct.Struct("!16sBHH")
 MAX_BLOCK_BYTES = 256 * 1024
-REQUEST_KINDS = {"file_manifest", "file_block"}
-REPLY_KINDS = {"file_manifest_reply", "file_error"}
+REQUEST_KINDS = {"file_manifest", "file_block", "file_session"}
+REPLY_KINDS = {"file_manifest_reply", "file_error", "file_session_reply", "file_block_started"}
 
 
 def valid_id(value):

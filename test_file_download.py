@@ -60,6 +60,7 @@ class FileTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertFalse(failures)
         sender_config = config("send/config.json")
+        sender_config["file_test_model"] = "loop"
         sender_config.update(lan_bind_ip="127.0.0.1", lan_port=free_port(), cloud_bind_ip="127.0.0.1",
                              cloud_host="127.0.0.1", cloud_data_port=cloud["data_port"],
                              cloud_control_port=cloud["control_port"], announce_interval=0.05,

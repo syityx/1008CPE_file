@@ -20,6 +20,7 @@ import file_protocol as files
 import network_setup
 import protocol as wire
 from send import fuzzy_pid
+from standard_model import make_plan, create_standard_files, PreciseTimer
 
 LOG = logging.getLogger("files")
 
@@ -55,7 +56,10 @@ class FileSender:
     def __init__(self, config, folder):
         self.config = config
         self.folder = Path(folder).resolve()
-        create_demo_files(self.folder)
+        if config.get("file_test_model", "loop") == "standard":
+            create_standard_files(self.folder)
+        else:
+            create_demo_files(self.folder)
         order = {"small.txt": 0, "medium.txt": 1, "large.txt": 2}
         paths = sorted((p for p in self.folder.iterdir() if p.is_file()),
                        key=lambda p: (order.get(p.name, 3), p.name))
@@ -73,6 +77,12 @@ class FileSender:
         self.sockets, self.threads = [], []
         self.peer, self.peer_seen = None, 0.0
         self.sent_bytes = [0, 0]
+        self.session = None
+        self.session_lock = threading.Lock()
+        self.started_jobs = {}
+        self.standard_pool = ThreadPoolExecutor(max_workers=32)
+        self.standard_slots = threading.BoundedSemaphore(32)
+        self.timer = None
         self.burst_packets = config.get("file_burst_packets", 8)
         self.burst_interval = config.get("file_burst_interval", 0.001)
         if type(self.burst_packets) is not int or not 1 <= self.burst_packets <= 64 or self.burst_interval < 0:
@@ -83,6 +93,9 @@ class FileSender:
 
     def start(self):
         try:
+            if self.config.get("file_test_model") == "standard":
+                self.timer = PreciseTimer()
+                self.timer.__enter__()
             self.lan = wire.udp_socket(self.config["lan_bind_ip"], self.config["lan_port"])
             self.sockets.append(self.lan)
             ip = self.config.get("cloud_bind_ip", "auto")
@@ -128,7 +141,15 @@ class FileSender:
                     continue
                 if lane == 0 and (address != self.peer or time.monotonic() - self.peer_seen >= self.config["peer_timeout"]):
                     continue
-                self.answer(lane, sock, address, message)
+                if message.get("session_id") and message.get("kind") == "file_block":
+                    # 定时任务在独立线程等待；主socket线程继续处理注册、保活和新请求。
+                    if self.standard_slots.acquire(blocking=False):
+                        self.standard_pool.submit(self.scheduled_answer, lane, sock, address, message)
+                    else:
+                        sock.sendto(self.control("file_error", request_id=message.get("request_id"),
+                                                 error="发送端标准任务窗口已满"), address)
+                else:
+                    self.answer(lane, sock, address, message)
         except Exception:
             if not self.stop.is_set():
                 LOG.exception("文件服务线程失败")
@@ -139,6 +160,27 @@ class FileSender:
         if not files.valid_id(identity):
             return
         try:
+            if message["kind"] == "file_session":
+                if self.config.get("file_test_model") != "standard":
+                    raise ValueError("发送端未启用标准模式，请更新并重启发送端。")
+                plan = make_plan(message.get("profile", "all"), message.get("count_limit", 0))
+                session_id = message.get("session_id")
+                if not files.valid_id(session_id):
+                    raise ValueError("标准会话标识无效。")
+                with self.session_lock:
+                    # 同一次握手重试不重置时钟；新测试使用新的会话标识。
+                    if not self.session or self.session["id"] != session_id:
+                        entries = {item["name"]: item for item in self.manifest}
+                        if any(entries.get(p["name"], {}).get("size") != p["size"] for p in plan):
+                            raise ValueError("发送端文件大小不符合表7，请使用标准文件目录。")
+                        self.session = dict(id=session_id, plan=plan, start_ns=time.monotonic_ns() + 2_000_000_000)
+                        self.started_jobs.clear()
+                    elif self.session["plan"] != plan:
+                        raise ValueError("同一会话的标准参数不能改变。")
+                    reply = self.control("file_session_reply", request_id=identity, session_id=session_id,
+                                         start_ns=self.session["start_ns"], server_now_ns=time.monotonic_ns(), plan=plan)
+                sock.sendto(reply, address)
+                return
             if message["kind"] == "file_manifest":
                 reply = self.control("file_manifest_reply", request_id=identity, files=self.manifest)
                 if len(reply) > 4096:
@@ -169,6 +211,17 @@ class FileSender:
             if len(block) != size:
                 raise ValueError("发送文件读取不完整。")
             target = address if lane == 0 else (self.config["cloud_host"], self.config["cloud_data_port"])
+            # 首个业务数据报的发送时间由发送端记录，两条路径共用同一时钟。
+            if message.get("session_id"):
+                key = (message["profile"], message["number"])
+                with self.session_lock:
+                    if not self.session or message["session_id"] != self.session["id"]:
+                        raise ValueError("标准会话已改变。")
+                    start_ns = self.started_jobs.setdefault(key, time.monotonic_ns())
+                    # 只保留最近4096个任务供重传复用，避免一小时测试不断增加内存。
+                    while len(self.started_jobs) > 4096:
+                        self.started_jobs.pop(next(iter(self.started_jobs)))
+                sock.sendto(self.control("file_block_started", request_id=identity, sent_ns=start_ns), address)
             for position, part in enumerate(wanted, 1):
                 if self.stop.is_set():
                     return
@@ -181,12 +234,45 @@ class FileSender:
         except (OSError, ValueError) as exc:
             sock.sendto(self.control("file_error", request_id=identity, error=str(exc)), address)
 
+    def scheduled_answer(self, lane, sock, address, message):
+        try:
+            with self.session_lock:
+                session = self.session
+                if not session or message["session_id"] != session["id"]:
+                    raise ValueError("标准会话无效或已被新的测试替换。")
+                spec = next((p for p in session["plan"] if p["profile"] == message.get("profile")), None)
+                number = message.get("number")
+                if not spec or type(number) is not int or not 0 <= number < spec["count"]:
+                    raise ValueError("标准任务类型或编号无效。")
+                index = message.get("file_index")
+                if type(index) is not int or not 0 <= index < len(self.manifest) or self.manifest[index]["name"] != spec["name"]:
+                    raise ValueError("标准任务与请求文件不匹配。")
+                due = session["start_ns"] + spec["offset_ns"] + number * spec["interval_ns"]
+            remaining = (due - time.monotonic_ns()) / 1e9
+            if remaining > 2:
+                raise ValueError("标准任务请求提前超过2秒，请检查预请求窗口。")
+            # Windows等待可能向下取整，反复检查绝对期限，禁止提前发业务包。
+            while remaining > 0:
+                if self.stop.wait(min(remaining, 0.1)):
+                    return
+                remaining = (due - time.monotonic_ns()) / 1e9
+            self.answer(lane, sock, address, message)
+        except (OSError, ValueError) as exc:
+            if not self.stop.is_set():
+                sock.sendto(self.control("file_error", request_id=message.get("request_id"), error=str(exc)), address)
+        finally:
+            self.standard_slots.release()
+
     def close(self):
         self.stop.set()
         for thread in self.threads:
             thread.join(1)
+        self.standard_pool.shutdown(wait=True, cancel_futures=True)
         for sock in self.sockets:
             sock.close()
+        if self.timer:
+            self.timer.__exit__()
+            self.timer = None
 
 
 class DownloadTransport:
@@ -259,7 +345,13 @@ class DownloadTransport:
                     continue
                 fragment = files.unpack_fragment(packet, self.config["token"])
                 with self.condition:
-                    if message and message.get("kind") in files.REPLY_KINDS:
+                    if message and message.get("kind") == "file_block_started":
+                        box = self.pending.get(message.get("request_id"))
+                        stamp = message.get("sent_ns")
+                        if box is not None and box["lane"] == lane and type(stamp) is int and stamp > 0:
+                            box["sent_ns"] = stamp
+                            self.condition.notify_all()
+                    elif message and message.get("kind") in files.REPLY_KINDS:
                         box = self.pending.get(message.get("request_id"))
                         if box is not None and box["lane"] == lane:
                             box["reply"] = message
@@ -291,7 +383,7 @@ class DownloadTransport:
                 self.condition.wait(0.1)
         LOG.info("注册LAN/CPE=True/True，开始循环文件下载")
 
-    def request(self, lane, kind, **fields):
+    def request(self, lane, kind, with_timing=False, **fields):
         identity = uuid.uuid4().hex
         box = dict(lane=lane, reply=None, parts={}, **fields)
         if kind == "file_block":
@@ -307,7 +399,7 @@ class DownloadTransport:
                     missing = [i for i in range(box.get("total", 0)) if i not in box["parts"]]
                 request = dict(fields)
                 if kind == "file_block" and attempt:
-                    request["missing"] = missing
+                    request["missing"] = missing or ([0] if with_timing else missing)
                 self.sockets[lane].sendto(self.control(kind, request_id=identity, **request), target)
                 deadline = time.monotonic() + self.config.get("file_request_timeout", 1.0)
                 with self.condition:
@@ -316,8 +408,9 @@ class DownloadTransport:
                             if box["reply"]["kind"] == "file_error":
                                 raise ValueError(box["reply"].get("error", "发送端拒绝请求"))
                             return box["reply"], attempt
-                        if kind == "file_block" and len(box["parts"]) == box["total"]:
-                            return b"".join(box["parts"][i] for i in range(box["total"])), attempt
+                        if kind == "file_block" and len(box["parts"]) == box["total"] and (not with_timing or box.get("sent_ns")):
+                            data = b"".join(box["parts"][i] for i in range(box["total"]))
+                            return (data, attempt, box.get("sent_ns")) if with_timing else (data, attempt)
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             break

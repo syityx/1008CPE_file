@@ -20,5 +20,10 @@
   "file_duration": 0,
   "file_max_retries": 5,
   "file_request_timeout": 1.0,
-  "file_registration_timeout": 60
+  "file_registration_timeout": 60,
+  "file_test_model": "standard",
+  "standard_profile": "all",
+  "standard_count_limit": 0,
+  "standard_prefetch_seconds": 0.25,
+  "standard_timing_tolerance_ms": 5.0
 }
