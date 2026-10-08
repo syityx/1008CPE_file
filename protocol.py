@@ -1,4 +1,5 @@
 """1008CPE_file注册与文件请求共用协议。公开token用于实验匹配，不加密文件。"""
+import errno
 import hashlib
 import hmac
 import json
@@ -65,7 +66,19 @@ def udp_socket(ip, port):
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
-        sock.bind((ip, port))
+        try:
+            sock.bind((ip, port))
+        except OSError as exc:
+            # 显示冲突端点；不复用端口，避免不同实验进程争抢UDP数据。
+            if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
+                raise OSError(
+                    exc.errno,
+                    "本机 UDP {}:{} 已被其他程序占用。请关闭旧的发送/接收程序后重试；"
+                    "Windows 可在 PowerShell 执行："
+                    "Get-NetUDPEndpoint -LocalPort {} | "
+                    "Select-Object LocalAddress,LocalPort,OwningProcess".format(ip, port, port),
+                ) from exc
+            raise
         sock.settimeout(0.2)
         # Windows 的 UDP 对端未启动时，不让 ICMP 错误变成接收线程异常。
         if hasattr(socket, "SIO_UDP_CONNRESET"):

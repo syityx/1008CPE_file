@@ -97,6 +97,24 @@ python receive/main.py --model loop --rounds 1
 
 只保留每类文件最新副本，CSV逐业务记录全部次数。接收字节包含重复/重传正文，不含UDP/IP/HMAC头；有效字节见`files.csv`。生成的文件、个人文件、下载结果和私钥均不上传GitHub。
 
+## 启动时报端口占用
+
+`WinError 10048`表示本机UDP端口已被占用。关闭本机旧的发送/接收窗口，再启动一次；发送端和接收端在不同电脑运行。程序会显示具体冲突的IP和端口。
+
+如果仍报错，在报错电脑的PowerShell运行：
+
+```powershell
+Get-NetUDPEndpoint | Where-Object { $_.LocalPort -in 30012,30016 } | Select-Object LocalAddress,LocalPort,OwningProcess
+```
+
+用输出的`OwningProcess`查询进程（把1234换成实际编号）：
+
+```powershell
+Get-CimInstance Win32_Process -Filter 'ProcessId = 1234' | Select-Object ProcessId,Name,CommandLine
+```
+
+确认是旧的实验程序后，在它的窗口按Ctrl+C关闭。不要直接关闭所有Python进程，也不要用端口复用掩盖冲突。此错误发生在本机绑定阶段，与云端防火墙是否放行无关。
+
 ## 云端与验证
 
 固定云地址47.97.248.31，LAN端口UDP30012，云端UDP30016/30017，接收端CPE本地UDP30016。独立云目录`/root/1008CPE_file`，常驻服务`1008cpe-file-relay.service`。云控制台允许UDP30016/30017；原视频30006/30007和原服务保留。新协议增加标准会话和首包时间回传，云端已同步协议；用户无需手动改服务器。
